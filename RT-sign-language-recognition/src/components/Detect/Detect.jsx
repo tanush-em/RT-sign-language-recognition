@@ -21,22 +21,34 @@ const Detect = ({ modelUrl }) => {
   const [gestureOutput, setGestureOutput] = useState("");
   const [progress, setProgress] = useState(0);
   const [detectedData, setDetectedData] = useState([]);
-  const [lastResults, setLastResults] = useState(null);
+  const [lastLandmarks, setLastLandmarks] = useState(null);
 
   let startTime = "";
 
+  // Clear the visualization canvas
+  const clearVisualizationCanvas = useCallback(() => {
+    if (visualizationCanvasRef.current) {
+      const ctx = visualizationCanvasRef.current.getContext("2d");
+      ctx.fillStyle = "#f8f9fa";
+      ctx.fillRect(0, 0, visualizationCanvasRef.current.width, visualizationCanvasRef.current.height);
+    }
+  }, []);
+
+  // Draw hand landmarks on the visualization canvas
   const drawVisualization = useCallback(() => {
-    if (!lastResults || !lastResults.landmarks || !visualizationCanvasRef.current) return;
+    if (!lastLandmarks || !visualizationCanvasRef.current) return;
     
     const canvasCtx = visualizationCanvasRef.current.getContext("2d");
-    canvasCtx.save();
+    
+    // Clear the canvas
     canvasCtx.clearRect(
-      0, 
-      0, 
-      visualizationCanvasRef.current.width, 
+      0,
+      0,
+      visualizationCanvasRef.current.width,
       visualizationCanvasRef.current.height
     );
     
+    // Draw background
     canvasCtx.fillStyle = "#f8f9fa";
     canvasCtx.fillRect(
       0,
@@ -45,24 +57,31 @@ const Detect = ({ modelUrl }) => {
       visualizationCanvasRef.current.height
     );
     
-    // Draw hand landmarks at 2x size in the visualization canvas
-    for (const landmarks of lastResults.landmarks) {
-      // Scale landmarks to fit the visualization canvas
+    // Draw each hand's landmarks
+    for (const landmarks of lastLandmarks) {
+      // Scale landmarks to visualization canvas dimensions
       const scaledLandmarks = landmarks.map(point => ({
         x: point.x * visualizationCanvasRef.current.width,
         y: point.y * visualizationCanvasRef.current.height,
         z: point.z
       }));
       
-      drawConnectors(canvasCtx, scaledLandmarks, HAND_CONNECTIONS, {
-        color: "#007bff",
-        lineWidth: 5,
-      });
-      drawLandmarks(canvasCtx, scaledLandmarks, { color: "#dc3545", lineWidth: 2 });
+      // Draw connections between landmarks
+      drawConnectors(
+        canvasCtx, 
+        scaledLandmarks, 
+        HAND_CONNECTIONS, 
+        { color: "#007bff", lineWidth: 5 }
+      );
+      
+      // Draw the landmarks
+      drawLandmarks(
+        canvasCtx, 
+        scaledLandmarks, 
+        { color: "#dc3545", lineWidth: 3, radius: 5 }
+      );
     }
-    
-    canvasCtx.restore();
-  }, [lastResults]);
+  }, [lastLandmarks]);
 
   const predictWebcam = useCallback(() => {
     if (!webcamRef.current || !canvasRef.current || !gestureRecognizer) return;
@@ -77,9 +96,6 @@ const Detect = ({ modelUrl }) => {
       webcamRef.current.video,
       nowInMs
     );
-
-    // Store the results for visualization
-    setLastResults(results);
 
     const canvasCtx = canvasRef.current.getContext("2d");
     canvasCtx.save();
@@ -99,6 +115,10 @@ const Detect = ({ modelUrl }) => {
     canvasRef.current.height = videoHeight;
 
     if (results.landmarks) {
+      // Update the lastLandmarks state for visualization
+      setLastLandmarks(results.landmarks);
+      
+      // Draw on the webcam canvas
       for (const landmarks of results.landmarks) {
         drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {
           color: "#007bff",
@@ -127,9 +147,17 @@ const Detect = ({ modelUrl }) => {
       requestRef.current = requestAnimationFrame(predictWebcam);
     }
     
-    // Update visualization
-    drawVisualization();
-  }, [webcamRunning, runningMode, gestureRecognizer, drawVisualization]);
+    canvasCtx.restore();
+  }, [webcamRunning, runningMode, gestureRecognizer]);
+
+  // Effect to update visualization whenever lastLandmarks changes
+  useEffect(() => {
+    if (lastLandmarks) {
+      drawVisualization();
+    } else {
+      clearVisualizationCanvas();
+    }
+  }, [lastLandmarks, drawVisualization, clearVisualizationCanvas]);
 
   const animate = useCallback(() => {
     requestRef.current = requestAnimationFrame(animate);
@@ -145,6 +173,8 @@ const Detect = ({ modelUrl }) => {
     if (webcamRunning === true) {
       setWebcamRunning(false);
       cancelAnimationFrame(requestRef.current);
+      setLastLandmarks(null); // Clear visualization when stopping
+      clearVisualizationCanvas();
 
       const endTime = new Date();
       const timeElapsed = (
@@ -194,21 +224,26 @@ const Detect = ({ modelUrl }) => {
       startTime = new Date();
       requestRef.current = requestAnimationFrame(animate);
     }
-  }, [webcamRunning, gestureRecognizer, animate, detectedData]);
+  }, [webcamRunning, gestureRecognizer, animate, detectedData, clearVisualizationCanvas]);
 
   useEffect(() => {
     async function loadRecognizer() {
-      const vision = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-      );
-      const recognizer = await GestureRecognizer.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: modelUrl,
-        },
-        numHands: 2,
-        runningMode: runningMode,
-      });
-      setGestureRecognizer(recognizer);
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        );
+        const recognizer = await GestureRecognizer.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: modelUrl,
+          },
+          numHands: 2,
+          runningMode: runningMode,
+        });
+        setGestureRecognizer(recognizer);
+        console.log("Gesture recognizer loaded successfully");
+      } catch (error) {
+        console.error("Error loading gesture recognizer:", error);
+      }
     }
     loadRecognizer();
   }, [modelUrl, runningMode]);
@@ -218,11 +253,16 @@ const Detect = ({ modelUrl }) => {
     if (visualizationCanvasRef.current) {
       visualizationCanvasRef.current.width = 400;
       visualizationCanvasRef.current.height = 400;
-      const ctx = visualizationCanvasRef.current.getContext("2d");
-      ctx.fillStyle = "#f8f9fa";
-      ctx.fillRect(0, 0, 400, 400);
+      clearVisualizationCanvas();
     }
-  }, []);
+    
+    // Cleanup function to cancel animation frame on unmount
+    return () => {
+      if (requestRef.current) {
+        cancelAnimationFrame(requestRef.current);
+      }
+    };
+  }, [clearVisualizationCanvas]);
 
   return (
     <div className="signlang-app">
@@ -238,6 +278,7 @@ const Detect = ({ modelUrl }) => {
               audio={false}
               ref={webcamRef}
               className="signlang-webcam"
+              mirrored={true}
             />
             <canvas ref={canvasRef} className="signlang-canvas" />
           </div>
@@ -245,7 +286,12 @@ const Detect = ({ modelUrl }) => {
 
         <div className="signlang-visualization">
           <h2>Hand Detection</h2>
-          <canvas ref={visualizationCanvasRef} className="visualization-canvas" />
+          <canvas 
+            ref={visualizationCanvasRef} 
+            className="visualization-canvas" 
+            width="400" 
+            height="400"
+          />
         </div>
       </div>
 
