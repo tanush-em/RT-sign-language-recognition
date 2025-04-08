@@ -1,19 +1,12 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { FilesetResolver, GestureRecognizer } from "@mediapipe/tasks-vision";
-import {
-  drawConnectors,
-  drawLandmarks,
-} from "@mediapipe/drawing_utils";
-import { HAND_CONNECTIONS } from "@mediapipe/hands";
 import Webcam from "react-webcam";
 import ProgressBar from "./ProgressBar/ProgressBar";
 import "./Detect.css";
 
 const Detect = ({ modelUrl }) => {
   const webcamRef = useRef(null);
-  const canvasRef = useRef(null);
   const requestRef = useRef();
-  const visualizationCanvasRef = useRef(null);
 
   const [gestureRecognizer, setGestureRecognizer] = useState(null);
   const [runningMode, setRunningMode] = useState("IMAGE");
@@ -21,70 +14,12 @@ const Detect = ({ modelUrl }) => {
   const [gestureOutput, setGestureOutput] = useState("");
   const [progress, setProgress] = useState(0);
   const [detectedData, setDetectedData] = useState([]);
-  const [lastLandmarks, setLastLandmarks] = useState(null);
+  const [detectedHistory, setDetectedHistory] = useState([]);
 
   let startTime = "";
 
-  // Clear the visualization canvas
-  const clearVisualizationCanvas = useCallback(() => {
-    if (visualizationCanvasRef.current) {
-      const ctx = visualizationCanvasRef.current.getContext("2d");
-      ctx.fillStyle = "#f8f9fa";
-      ctx.fillRect(0, 0, visualizationCanvasRef.current.width, visualizationCanvasRef.current.height);
-    }
-  }, []);
-
-  // Draw hand landmarks on the visualization canvas
-  const drawVisualization = useCallback(() => {
-    if (!lastLandmarks || !visualizationCanvasRef.current) return;
-    
-    const canvasCtx = visualizationCanvasRef.current.getContext("2d");
-    
-    // Clear the canvas
-    canvasCtx.clearRect(
-      0,
-      0,
-      visualizationCanvasRef.current.width,
-      visualizationCanvasRef.current.height
-    );
-    
-    // Draw background
-    canvasCtx.fillStyle = "#f8f9fa";
-    canvasCtx.fillRect(
-      0,
-      0,
-      visualizationCanvasRef.current.width,
-      visualizationCanvasRef.current.height
-    );
-    
-    // Draw each hand's landmarks
-    for (const landmarks of lastLandmarks) {
-      // Scale landmarks to visualization canvas dimensions
-      const scaledLandmarks = landmarks.map(point => ({
-        x: point.x * visualizationCanvasRef.current.width,
-        y: point.y * visualizationCanvasRef.current.height,
-        z: point.z
-      }));
-      
-      // Draw connections between landmarks
-      drawConnectors(
-        canvasCtx, 
-        scaledLandmarks, 
-        HAND_CONNECTIONS, 
-        { color: "#007bff", lineWidth: 5 }
-      );
-      
-      // Draw the landmarks
-      drawLandmarks(
-        canvasCtx, 
-        scaledLandmarks, 
-        { color: "#dc3545", lineWidth: 3, radius: 5 }
-      );
-    }
-  }, [lastLandmarks]);
-
   const predictWebcam = useCallback(() => {
-    if (!webcamRef.current || !canvasRef.current || !gestureRecognizer) return;
+    if (!webcamRef.current || !gestureRecognizer) return;
     
     if (runningMode === "IMAGE") {
       setRunningMode("VIDEO");
@@ -97,47 +32,28 @@ const Detect = ({ modelUrl }) => {
       nowInMs
     );
 
-    const canvasCtx = canvasRef.current.getContext("2d");
-    canvasCtx.save();
-    canvasCtx.clearRect(
-      0,
-      0,
-      canvasRef.current.width,
-      canvasRef.current.height
-    );
-
-    const videoWidth = webcamRef.current.video.videoWidth;
-    const videoHeight = webcamRef.current.video.videoHeight;
-
-    webcamRef.current.video.width = videoWidth;
-    webcamRef.current.video.height = videoHeight;
-    canvasRef.current.width = videoWidth;
-    canvasRef.current.height = videoHeight;
-
-    if (results.landmarks) {
-      // Update the lastLandmarks state for visualization
-      setLastLandmarks(results.landmarks);
-      
-      // Draw on the webcam canvas
-      for (const landmarks of results.landmarks) {
-        drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {
-          color: "#007bff",
-          lineWidth: 5,
-        });
-        drawLandmarks(canvasCtx, landmarks, { color: "#dc3545", lineWidth: 2 });
-      }
-    }
-
     if (results.gestures.length > 0) {
       const gesture = results.gestures[0][0];
+      const detectedSign = gesture.categoryName;
+      
       setDetectedData((prevData) => [
         ...prevData,
         {
-          SignDetected: gesture.categoryName,
+          SignDetected: detectedSign,
         },
       ]);
-      setGestureOutput(gesture.categoryName);
+      
+      setGestureOutput(detectedSign);
       setProgress(Math.round(parseFloat(gesture.score) * 100));
+      
+      // Update history if the sign changes
+      if (detectedHistory.length === 0 || detectedHistory[detectedHistory.length - 1] !== detectedSign) {
+        setDetectedHistory(prev => {
+          const newHistory = [...prev, detectedSign];
+          // Keep only the last 5 unique signs
+          return newHistory.slice(-5);
+        });
+      }
     } else {
       setGestureOutput("");
       setProgress(0);
@@ -146,18 +62,7 @@ const Detect = ({ modelUrl }) => {
     if (webcamRunning === true) {
       requestRef.current = requestAnimationFrame(predictWebcam);
     }
-    
-    canvasCtx.restore();
-  }, [webcamRunning, runningMode, gestureRecognizer]);
-
-  // Effect to update visualization whenever lastLandmarks changes
-  useEffect(() => {
-    if (lastLandmarks) {
-      drawVisualization();
-    } else {
-      clearVisualizationCanvas();
-    }
-  }, [lastLandmarks, drawVisualization, clearVisualizationCanvas]);
+  }, [webcamRunning, runningMode, gestureRecognizer, detectedHistory]);
 
   const animate = useCallback(() => {
     requestRef.current = requestAnimationFrame(animate);
@@ -173,8 +78,6 @@ const Detect = ({ modelUrl }) => {
     if (webcamRunning === true) {
       setWebcamRunning(false);
       cancelAnimationFrame(requestRef.current);
-      setLastLandmarks(null); // Clear visualization when stopping
-      clearVisualizationCanvas();
 
       const endTime = new Date();
       const timeElapsed = (
@@ -219,12 +122,13 @@ const Detect = ({ modelUrl }) => {
       });
 
       setDetectedData([]);
+      setDetectedHistory([]);
     } else {
       setWebcamRunning(true);
       startTime = new Date();
       requestRef.current = requestAnimationFrame(animate);
     }
-  }, [webcamRunning, gestureRecognizer, animate, detectedData, clearVisualizationCanvas]);
+  }, [webcamRunning, gestureRecognizer, animate, detectedData]);
 
   useEffect(() => {
     async function loadRecognizer() {
@@ -249,82 +153,70 @@ const Detect = ({ modelUrl }) => {
   }, [modelUrl, runningMode]);
 
   useEffect(() => {
-    // Initialize visualization canvas
-    if (visualizationCanvasRef.current) {
-      visualizationCanvasRef.current.width = 400;
-      visualizationCanvasRef.current.height = 400;
-      clearVisualizationCanvas();
-    }
-    
     // Cleanup function to cancel animation frame on unmount
     return () => {
       if (requestRef.current) {
         cancelAnimationFrame(requestRef.current);
       }
     };
-  }, [clearVisualizationCanvas]);
+  }, []);
 
   return (
     <div className="signlang-app">
       <header className="signlang-header">
-        <h1>Real-Time Sign Language Recognition</h1>
+        <h1>Real Time Sign Language Recognition</h1>
+        <p className="app-description">An assistive tool for for the speaking impaired.</p>
       </header>
       
-      <div className="signlang-content">
-        <div className="signlang-webcam-container">
-          <h2>Camera Feed</h2>
-          <div className="webcam-wrapper">
-            <Webcam
-              audio={false}
-              ref={webcamRef}
-              className="signlang-webcam"
-              mirrored={true}
-            />
-            <canvas ref={canvasRef} className="signlang-canvas" />
-          </div>
-        </div>
-
-        <div className="signlang-visualization">
-          <h2>Hand Detection</h2>
-          <canvas 
-            ref={visualizationCanvasRef} 
-            className="visualization-canvas" 
-            width="400" 
-            height="400"
-          />
-        </div>
-      </div>
-
-      <div className="signlang-controls">
-        <button 
-          onClick={enableCam}
-          className={webcamRunning ? "stop-button" : "start-button"}
-        >
-          {webcamRunning ? "Stop" : "Start"}
-        </button>
+      <div className="signlang-webcam-container">
+        <Webcam
+          audio={false}
+          ref={webcamRef}
+          className="signlang-webcam"
+          mirrored={true}
+        />
         
-        <div className="signlang-results">
-          <div className="gesture-output">
-            {gestureOutput ? (
-              <>
-                <h3>Detected Sign:</h3>
-                <p>{gestureOutput}</p>
-              </>
-            ) : (
-              <p className="no-detection">No sign detected</p>
-            )}
-          </div>
-          
-          <div className="progress-container">
-            {progress > 0 && (
-              <>
-                <h3>Confidence:</h3>
-                <ProgressBar progress={progress} />
-              </>
-            )}
-          </div>
+        <div className="signlang-controls">
+          <button 
+            onClick={enableCam}
+            className={webcamRunning ? "stop-button" : "start-button"}
+            aria-label={webcamRunning ? "Stop detection" : "Start detection"}
+          >
+            {webcamRunning ? "Stop Detection" : "Start Detection"}
+          </button>
         </div>
       </div>
+
+      <div className="current-detection">
+        {gestureOutput ? (
+          <>
+            <div className="current-sign-wrapper">
+              <div className="current-sign">{gestureOutput}</div>
+              {progress > 0 && (
+                <div className="confidence-wrapper">
+                  <ProgressBar progress={progress} />
+                  <span className="confidence-value">{progress}%</span>
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="waiting-detection">
+            {webcamRunning ? "Waiting for sign..." : "Press Start to begin detection"}
+          </div>
+        )}
+      </div>
+      
+      {detectedHistory.length > 0 && (
+        <div className="detection-history">
+          <h2>Recent Signs</h2>
+          <div className="history-signs">
+            {detectedHistory.map((sign, index) => (
+              <div key={index} className="history-sign">{sign}</div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
